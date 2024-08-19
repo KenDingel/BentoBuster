@@ -1,245 +1,109 @@
 import os
-import json
-import databento as db
 import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-import zstandard as zstd
-import multiprocessing as mp
-from functools import partial
+from datetime import datetime
 from tqdm import tqdm
-from databento.common.error import BentoError
+import traceback
+from pyarrow import parquet as pq
+
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class DataLoader:
-    """
-    A class for loading and processing financial data from local files.
-
-    This class handles data decompression, loading, and processing from .dbn and .dbn.zst files.
-    It supports multi-core processing for improved performance.
-
-    Attributes:
-        client (db.Historical): Databento historical data client.
-        data_dir (str): Directory containing the data files.
-        num_cores (int): Number of CPU cores to use for parallel processing.
-        error_files (list): List of files that couldn't be processed, with error messages.
-        symbology (dict): Mapping of instrument IDs to symbols.
-        metadata (dict): Metadata for the loaded data.
-    """
-
-    def __init__(self, api_key, data_dir='data'):
-        """
-        Initialize the DataLoader.
-
-        Args:
-            api_key (str): Databento API key.
-            data_dir (str, optional): Directory containing the data files. Defaults to 'data'.
-        """
-        self.client = db.Historical(api_key)
+    def __init__(self, data_dir='data', processed_dir='processed_data'):
         self.data_dir = data_dir
-        self.num_cores = mp.cpu_count() * 2
+        self.processed_dir = processed_dir
         self.error_files = []
-        self.symbology = self.load_symbology()
-        self.metadata = self.load_metadata()
+        self.symbol_map = {
+            'MESH5': 'MES.FUT',  # March 2025 contract
+            'MESM5': 'MES.FUT',  # June 2025 contract
+            'MESU4': 'MES.FUT',  # September 2024 contract
+            'MESU4-MESH5': 'MES.FUT',  # Spread, map to front-month (MESU4)
+            'MESU4-MESZ4': 'MES.FUT',  # Spread, map to front-month (MESU4)
+            'MESU5': 'MES.FUT',  # September 2025 contract
+            'MESZ4': 'MES.FUT',  # December 2024 contract
+            'MESZ4-MESH5': 'MES.FUT',  # Spread, map to front-month (MESZ4)
+            'MNQH5': 'MNQ.FUT',  # March 2025 contract
+            'MNQM5': 'MNQ.FUT',  # June 2025 contract
+            'MNQU4': 'MNQ.FUT',  # September 2024 contract
+            'MNQU4-MNQH5': 'MNQ.FUT',  # Spread, map to front-month (MNQU4)
+            'MNQU4-MNQZ4': 'MNQ.FUT',  # Spread, map to front-month (MNQU4)
+            'MNQU5': 'MNQ.FUT',  # September 2025 contract
+            'MNQZ4': 'MNQ.FUT',  # December 2024 contract
+        }
+        os.makedirs(self.processed_dir, exist_ok=True)
 
-    def load_symbology(self):
+    def process_files(self, start_date, end_date, symbols):
         """
-        Load symbology mapping from a JSON file.
-
-        Returns:
-            dict: Mapping of instrument IDs to symbols.
-        """
-        symbology_file = os.path.join(self.data_dir, 'symbology.json')
-        if os.path.exists(symbology_file):
-            with open(symbology_file, 'r') as f:
-                return json.load(f)
-        return {}
-
-    def load_metadata(self):
-        """
-        Load metadata from a JSON file.
-
-        Returns:
-            dict: Metadata for the loaded data.
-        """
-        metadata_file = os.path.join(self.data_dir, 'metadata.json')
-        if os.path.exists(metadata_file):
-            with open(metadata_file, 'r') as f:
-                return json.load(f)
-        return {}
-
-    def decompress_file(self, file_path):
-        """
-        Decompress a .dbn.zst file to .dbn.
-
-        Args:
-            file_path (str): Path to the compressed file.
-
-        Returns:
-            str: Path to the decompressed file, or None if decompression failed.
-        """
-        output_file = file_path.replace('.dbn.zst', '.dbn')
-        try:
-            with open(file_path, 'rb') as compressed, open(output_file, 'wb') as decompressed:
-                dctx = zstd.ZstdDecompressor()
-                dctx.copy_stream(compressed, decompressed)
-            return output_file
-        except Exception as e:
-            self.error_files.append((file_path, f"Decompression error: {str(e)}"))
-            return None
-
-    def process_file(self, filename):
-        """
-        Process a single data file with improved error handling and logging.
-
-        Args:
-            filename (str): Name of the file to process.
-
-        Returns:
-            pd.DataFrame: Processed data, or an empty DataFrame if processing failed.
-        """
-        try:
-            file_path = os.path.join(self.data_dir, filename)
-            if filename.endswith('.dbn.zst'):
-                file_path = self.decompress_file(file_path)
-                if file_path is None:
-                    return pd.DataFrame()
-            
-            data = db.DBNStore.from_file(file_path)
-            df = data.to_df()
-            
-            if df.empty:
-                self.error_files.append((filename, "Empty DataFrame"))
-                return pd.DataFrame()
-            
-            if 'symbol' not in df.columns and 'instrument_id' in df.columns:
-                df['symbol'] = df['instrument_id'].map(self.symbology.get)
-            
-            # Ensure the index is a DatetimeIndex
-            if 'timestamp' in df.columns:
-                df.set_index('timestamp', inplace=True)
-            df.index = pd.to_datetime(df.index, utc=True)
-            
-            print(f"Processed file: {filename}")
-            print(f"DataFrame shape: {df.shape}")
-            print(f"Columns: {df.columns}")
-            print(f"Date range: {df.index.min()} to {df.index.max()}")
-            
-            return df
-        except BentoError as e:
-            self.error_files.append((filename, f"BentoError: {str(e)}"))
-            print(f"BentoError processing file {filename}: {str(e)}")
-            return pd.DataFrame()
-        except Exception as e:
-            self.error_files.append((filename, f"Unexpected error: {str(e)}"))
-            print(f"Unexpected error processing file {filename}: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return pd.DataFrame()
-
-    def load_local_data(self, start_date, end_date, symbols, chunk_size=timedelta(days=1)):
-        """
-        Load and process local data in chunks with improved error handling and logging.
+        Generator that yields processed data from files within the date range.
 
         Args:
             start_date (str or datetime): Start date for data loading.
             end_date (str or datetime): End date for data loading.
             symbols (list): List of symbols to load data for.
-            chunk_size (timedelta, optional): Size of each data chunk. Defaults to 1 day.
 
         Yields:
-            pd.DataFrame: Processed data chunk.
+            pd.DataFrame: Processed and filtered data from each file.
         """
         start_date = pd.to_datetime(start_date, utc=True)
         end_date = pd.to_datetime(end_date, utc=True)
-        current_date = start_date
-
-        while current_date <= end_date:
-            chunk_end = min(current_date + chunk_size, end_date)
-            files = [f for f in os.listdir(self.data_dir) if f.endswith(('.dbn.zst', '.dbn'))]
-            
-            print(f"Processing data from {current_date} to {chunk_end}")
-            print(f"Found {len(files)} files to process")
-            
-            with mp.Pool(processes=self.num_cores) as pool:
-                results = list(tqdm(pool.imap(self.process_file, files), total=len(files), desc="Processing files"))
-            
-            valid_results = [df for df in results if not df.empty]
-            if valid_results:
-                combined_df = pd.concat(valid_results, ignore_index=True)
+        
+        files = sorted([f for f in os.listdir(self.data_dir) if f.endswith('.ohlcv-1m.json')])
+        
+        for file in tqdm(files, desc="Processing files"):
+            try:
+                file_path = os.path.join(self.data_dir, file)
+                df = pd.read_json(file_path, lines=True)
                 
-                print(f"Combined DataFrame shape before filtering: {combined_df.shape}")
-                print(f"Unique symbols in combined DataFrame: {combined_df['symbol'].unique()}")
-                print(f"Date range in combined DataFrame: {combined_df.index.min()} to {combined_df.index.max()}")
-
-                # Ensure the index is a DatetimeIndex
-                if not isinstance(combined_df.index, pd.DatetimeIndex):
-                    combined_df.index = pd.to_datetime(combined_df.index, utc=True)
+                logging.info(f"Processing file: {file}")
+                logging.info(f"Initial shape: {df.shape}")
                 
-                # Filter the DataFrame based on the date range
-                combined_df = combined_df[
-                    (combined_df.index >= current_date) & (combined_df.index < chunk_end)
-                ]
+                # Extract timestamp and set as index
+                df['timestamp'] = pd.to_datetime(df['hd'].apply(lambda x: x['ts_event']), utc=True)
+                df = df.set_index('timestamp')
                 
-                print(f"Combined DataFrame shape after date filtering: {combined_df.shape}")
-
+                logging.info(f"Date range in file: {df.index.min()} to {df.index.max()}")
+                logging.info(f"Unique symbols before filtering: {df['symbol'].unique()}")
+                
+                # Filter by date range
+                df = df[(df.index >= start_date) & (df.index <= end_date)]
+                
+                logging.info(f"Shape after date filtering: {df.shape}")
+                
+                if df.empty:
+                    logging.info("No data left after date filtering.")
+                    continue
+                
+                # Filter by symbols if specified
                 if symbols != ["ALL_SYMBOLS"]:
-                    combined_df = combined_df[combined_df['symbol'].isin(symbols)]
-                    print(f"Combined DataFrame shape after symbol filtering: {combined_df.shape}")
-
-                if not combined_df.empty:
-                    print(f"Yielding chunk with shape: {combined_df.shape}")
-                    yield combined_df
-                else:
-                    print("No valid data in this chunk after filtering")
-                    print(f"Current date: {current_date}, Chunk end: {chunk_end}")
-                    print(f"Symbols requested: {symbols}")
-                    print("Sample of combined_df before filtering:")
-                    print(combined_df.head())
-                    print("Unique dates in combined_df:")
-                    print(combined_df.index.unique())
-            else:
-                print("No valid data in this chunk")
-                print(f"Current date: {current_date}, Chunk end: {chunk_end}")
-                print(f"Symbols requested: {symbols}")
-
-            current_date = chunk_end
-
-    def get_data(self, symbols, start_date, end_date, timeframe='1T'):
-        """
-        Get data for specified symbols, date range, and timeframe with improved logging.
-
-        Args:
-            symbols (list): List of symbols to get data for.
-            start_date (str or datetime): Start date for data retrieval.
-            end_date (str or datetime): End date for data retrieval.
-            timeframe (str, optional): Timeframe for data resampling. Defaults to '1T' (1 minute).
-
-        Yields:
-            pd.DataFrame: Processed and resampled data chunk.
-        """
-        for chunk in self.load_local_data(start_date, end_date, symbols):
-            if chunk.empty:
-                print("Received empty chunk from load_local_data")
-                continue
-            
-            if timeframe != '1T':
-                print(f"Resampling data to {timeframe}")
-                chunk = self.resample_data(chunk, timeframe)
-                print(f"Resampled chunk shape: {chunk.shape}")
-            
-            yield chunk
-
+                    df = df[df['symbol'].isin(symbols)]
+                
+                logging.info(f"Shape after symbol filtering: {df.shape}")
+                logging.info(f"Unique symbols in filtered data: {df['symbol'].unique()}")
+                
+                if df.empty:
+                    logging.info("No data left after symbol filtering.")
+                    continue
+                
+                # Process numeric columns
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    df[col] = pd.to_numeric(df[col])
+                
+                df = df.drop('hd', axis=1)
+                
+                yield df
+                
+            except Exception as e:
+                self.error_files.append((file, str(e)))
+                logging.error(f"Error processing file {file}: {str(e)}")
+                logging.debug(traceback.format_exc())
+                
     def resample_data(self, df, timeframe):
-        """
-        Resample data to the specified timeframe.
-
-        Args:
-            df (pd.DataFrame): Data to resample.
-            timeframe (str): Timeframe for resampling.
-
-        Returns:
-            pd.DataFrame: Resampled data.
-        """
+        """Resample data to the specified timeframe."""
+        # Ensure the index is a DatetimeIndex
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index, unit='ns', utc=True)
+        
         resampled = df.groupby('symbol').resample(timeframe).agg({
             'open': 'first',
             'high': 'max',
@@ -247,7 +111,140 @@ class DataLoader:
             'close': 'last',
             'volume': 'sum'
         }).reset_index()
-        return resampled
+        return self.map_symbols(resampled)
+
+    def save_processed_data(self, df, timeframe):
+        """
+        Save processed data to a parquet file with correct timestamps.
+
+        Args:
+            df (pd.DataFrame): The DataFrame to save.
+            timeframe (str): The timeframe of the data (e.g., '1D', '1H').
+
+        Raises:
+            Exception: If there's an error during the saving process.
+        """
+        file_path = os.path.join(self.processed_dir, f"processed_{timeframe}.parquet")
+        
+        try:
+            logging.info(f"Saving processed data for timeframe {timeframe}. Shape: {df.shape}")
+            logging.info(f"Index type before processing: {type(df.index)}")
+            
+            # Ensure 'timestamp' column exists and is in the correct format
+            if 'timestamp' not in df.columns:
+                if isinstance(df.index, pd.DatetimeIndex):
+                    df['timestamp'] = df.index
+                else:
+                    raise ValueError("DataFrame does not contain a 'timestamp' column or a DatetimeIndex")
+            
+            df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
+            
+            # Set 'timestamp' as the index
+            df.set_index('timestamp', inplace=True)
+            
+            logging.info(f"Index type after processing: {type(df.index)}")
+            logging.info(f"Date range before saving: {df.index.min()} to {df.index.max()}")
+
+            # Save the DataFrame to parquet format
+            df.to_parquet(file_path, engine='pyarrow', index=True)
+
+            # Verify the saved data
+            saved_df = pd.read_parquet(file_path, engine='pyarrow')
+            logging.info(f"Verified saved data. Shape: {saved_df.shape}")
+            logging.info(f"Date range in saved file: {saved_df.index.min()} to {saved_df.index.max()}")
+
+            # Save additional metadata
+            txt_file = file_path.replace('.parquet', '.txt')
+            with open(txt_file, 'w') as f:
+                f.write(f"Date range: {df.index.min()} to {df.index.max()}\n")
+                f.write(f"Shape: {df.shape}\n")
+                f.write(f"Columns: {', '.join(df.columns)}\n")
+
+            logging.info(f"Successfully saved processed data for timeframe {timeframe}")
+
+        except Exception as e:
+            logging.error(f"Error saving processed data for timeframe {timeframe}: {str(e)}")
+            logging.error(traceback.format_exc())
+            raise
+
+    def get_data(self, symbols, start_date, end_date, timeframe='1T'):
+        """
+        Get data for specified symbols, date range, and timeframe.
+        Attempts to load from processed data first, if not available, processes raw data.
+        """
+        processed_file = os.path.join(self.processed_dir, f"processed_{timeframe}.parquet")
+        
+        logging.info(f"Attempting to load processed data for timeframe {timeframe}")
+        
+        if os.path.exists(processed_file):
+            try:
+                df = pd.read_parquet(processed_file, engine='pyarrow')
+                logging.info(f"Successfully read parquet file. Shape: {df.shape}")
+                
+                if df.empty:
+                    logging.warning(f"Processed file for timeframe {timeframe} is empty")
+                    return pd.DataFrame()
+                
+                # Ensure the index is a DatetimeIndex
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    df.index = pd.to_datetime(df.index, utc=True)
+                elif df.index.tz is None:
+                    df.index = df.index.tz_localize('UTC')
+                
+                start_date = pd.to_datetime(start_date, utc=True)
+                end_date = pd.to_datetime(end_date, utc=True)
+                
+                logging.info(f"Date range in file: {df.index.min()} to {df.index.max()}")
+                logging.info(f"Requested date range: {start_date} to {end_date}")
+                
+                df = df[(df.index >= start_date) & (df.index <= end_date)]
+                
+                if df.empty:
+                    logging.warning(f"No data left after date filtering for timeframe {timeframe}")
+                    return pd.DataFrame()
+                
+                if symbols != ["ALL_SYMBOLS"]:
+                    df = df[df['symbol'].isin(symbols)]
+                
+                if df.empty:
+                    logging.warning(f"No data left after symbol filtering for timeframe {timeframe}")
+                    return pd.DataFrame()
+                
+                logging.info(f"Returning processed data for timeframe {timeframe}. Shape: {df.shape}")
+                return df
+            except Exception as e:
+                logging.error(f"Error loading processed data: {str(e)}")
+                logging.info("Falling back to processing raw data.")
+        else:
+            logging.warning(f"Processed file does not exist for timeframe {timeframe}")
+
+        logging.info(f"Processing raw data for timeframe {timeframe}")
+        
+        # Process files and concatenate the results
+        dfs = []
+        for df in self.process_files(start_date, end_date, symbols):
+            dfs.append(df)
+        
+        if not dfs:
+            logging.warning("No data found for the specified criteria.")
+            return pd.DataFrame()
+        
+        df = pd.concat(dfs)
+        
+        # Resample the data to the desired timeframe
+        df = self.resample_data(df, timeframe)
+        
+        if not df.empty:
+            self.save_processed_data(df, timeframe)
+        else:
+            logging.warning("No data available after processing.")
+        
+        return df
+
+    def map_symbols(self, df):
+        """Map symbols to their corresponding futures."""
+        df['symbol'] = df['symbol'].map(self.symbol_map).fillna(df['symbol'])
+        return df
 
     def print_error_summary(self):
         """
