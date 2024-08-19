@@ -36,7 +36,7 @@ class DataLoader:
         """
         self.client = db.Historical(api_key)
         self.data_dir = data_dir
-        self.num_cores = mp.cpu_count()
+        self.num_cores = mp.cpu_count() * 2
         self.error_files = []
         self.symbology = self.load_symbology()
         self.metadata = self.load_metadata()
@@ -89,7 +89,7 @@ class DataLoader:
 
     def process_file(self, filename):
         """
-        Process a single data file.
+        Process a single data file with improved error handling and logging.
 
         Args:
             filename (str): Name of the file to process.
@@ -114,17 +114,31 @@ class DataLoader:
             if 'symbol' not in df.columns and 'instrument_id' in df.columns:
                 df['symbol'] = df['instrument_id'].map(self.symbology.get)
             
+            # Ensure the index is a DatetimeIndex
+            if 'timestamp' in df.columns:
+                df.set_index('timestamp', inplace=True)
+            df.index = pd.to_datetime(df.index, utc=True)
+            
+            print(f"Processed file: {filename}")
+            print(f"DataFrame shape: {df.shape}")
+            print(f"Columns: {df.columns}")
+            print(f"Date range: {df.index.min()} to {df.index.max()}")
+            
             return df
         except BentoError as e:
             self.error_files.append((filename, f"BentoError: {str(e)}"))
+            print(f"BentoError processing file {filename}: {str(e)}")
             return pd.DataFrame()
         except Exception as e:
             self.error_files.append((filename, f"Unexpected error: {str(e)}"))
+            print(f"Unexpected error processing file {filename}: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return pd.DataFrame()
 
     def load_local_data(self, start_date, end_date, symbols, chunk_size=timedelta(days=1)):
         """
-        Load and process local data in chunks.
+        Load and process local data in chunks with improved error handling and logging.
 
         Args:
             start_date (str or datetime): Start date for data loading.
@@ -152,22 +166,47 @@ class DataLoader:
             valid_results = [df for df in results if not df.empty]
             if valid_results:
                 combined_df = pd.concat(valid_results, ignore_index=True)
-                combined_df = combined_df[(combined_df.index >= current_date) & (combined_df.index < chunk_end)]
+                
+                print(f"Combined DataFrame shape before filtering: {combined_df.shape}")
+                print(f"Unique symbols in combined DataFrame: {combined_df['symbol'].unique()}")
+                print(f"Date range in combined DataFrame: {combined_df.index.min()} to {combined_df.index.max()}")
+
+                # Ensure the index is a DatetimeIndex
+                if not isinstance(combined_df.index, pd.DatetimeIndex):
+                    combined_df.index = pd.to_datetime(combined_df.index, utc=True)
+                
+                # Filter the DataFrame based on the date range
+                combined_df = combined_df[
+                    (combined_df.index >= current_date) & (combined_df.index < chunk_end)
+                ]
+                
+                print(f"Combined DataFrame shape after date filtering: {combined_df.shape}")
+
                 if symbols != ["ALL_SYMBOLS"]:
                     combined_df = combined_df[combined_df['symbol'].isin(symbols)]
+                    print(f"Combined DataFrame shape after symbol filtering: {combined_df.shape}")
+
                 if not combined_df.empty:
                     print(f"Yielding chunk with shape: {combined_df.shape}")
                     yield combined_df
                 else:
                     print("No valid data in this chunk after filtering")
+                    print(f"Current date: {current_date}, Chunk end: {chunk_end}")
+                    print(f"Symbols requested: {symbols}")
+                    print("Sample of combined_df before filtering:")
+                    print(combined_df.head())
+                    print("Unique dates in combined_df:")
+                    print(combined_df.index.unique())
             else:
                 print("No valid data in this chunk")
-            
+                print(f"Current date: {current_date}, Chunk end: {chunk_end}")
+                print(f"Symbols requested: {symbols}")
+
             current_date = chunk_end
 
     def get_data(self, symbols, start_date, end_date, timeframe='1T'):
         """
-        Get data for specified symbols, date range, and timeframe.
+        Get data for specified symbols, date range, and timeframe with improved logging.
 
         Args:
             symbols (list): List of symbols to get data for.
@@ -179,9 +218,15 @@ class DataLoader:
             pd.DataFrame: Processed and resampled data chunk.
         """
         for chunk in self.load_local_data(start_date, end_date, symbols):
+            if chunk.empty:
+                print("Received empty chunk from load_local_data")
+                continue
+            
             if timeframe != '1T':
                 print(f"Resampling data to {timeframe}")
                 chunk = self.resample_data(chunk, timeframe)
+                print(f"Resampled chunk shape: {chunk.shape}")
+            
             yield chunk
 
     def resample_data(self, df, timeframe):

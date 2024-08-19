@@ -61,7 +61,9 @@ def process_timeframe(loader, tf, symbols, start_date, end_date):
         print(f"Completed processing timeframe: {tf}")
     
     except Exception as e:
-        print(f"Error processing timeframe {tf}: {str(e)}")
+        import traceback
+        tb = traceback.format_exc()
+        print(f"Error processing timeframe {tf}: {str(e)} - {tb}")
     
     if tf_data.empty:
         print(f"Warning: No data processed for timeframe {tf}")
@@ -71,17 +73,11 @@ def process_timeframe(loader, tf, symbols, start_date, end_date):
     return tf, tf_data
 
 def main(verbose=False):
-    """
-    Main function to run the data processing and analysis pipeline with improved error handling and logging.
-
-    Args:
-        verbose (bool, optional): Whether to print verbose output. Defaults to False.
-    """
     loader = DataLoader(api_key=os.getenv("DATABENTO_API_KEY", "API_KEY_HERE"))
 
     symbols = ["ALL_SYMBOLS"]
-    start_date = "2024-06-16"
-    end_date = "2024-08-15"
+    start_date = "2019-08-16"  # Update this to match the actual start date in your data files
+    end_date = "2019-08-23"    # Update this to match the actual end date in your data files
     timeframes = ['1T', '3T', '5T', '15T', '1H', '4H', '12H', '1D', '2D']
 
     print("\nLoading and processing data...")
@@ -90,22 +86,30 @@ def main(verbose=False):
     for tf in tqdm(timeframes, desc="Overall Progress"):
         try:
             print(f"\nProcessing timeframe: {tf}")
-            tf, data = process_timeframe(loader, tf, symbols, start_date, end_date)
-            all_data[tf] = data
+            tf_data = pd.DataFrame()
+            for chunk in loader.get_data(symbols, start_date, end_date, timeframe=tf):
+                if not chunk.empty:
+                    tf_data = pd.concat([tf_data, chunk], ignore_index=True)
             
-            if not data.empty:
+            if not tf_data.empty:
+                all_data[tf] = tf_data
                 print(f"Successfully processed {tf} timeframe.")
-                print(f"Shape: {data.shape}")
-                print(f"Columns: {data.columns}")
-                print(f"Data types: {data.dtypes}")
+                print(f"Shape: {tf_data.shape}")
+                print(f"Columns: {tf_data.columns}")
+                print(f"Data types: {tf_data.dtypes}")
+                print(f"Date range: {tf_data.index.min()} to {tf_data.index.max()}")
                 if verbose:
                     print("First few rows:")
-                    print(data.head())
+                    print(tf_data.head())
             else:
                 print(f"Warning: No data processed for {tf} timeframe")
+                all_data[tf] = pd.DataFrame()
         
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
             print(f"Error processing timeframe {tf}: {str(e)}")
+            print(f"Traceback: {tb}")
             all_data[tf] = pd.DataFrame()
 
     print("\nData processing complete.")
