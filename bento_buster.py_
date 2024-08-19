@@ -1,0 +1,213 @@
+import nextcord
+from nextcord.ext import commands
+import databento as db
+import asyncio
+import json
+import logging
+from datetime import datetime, timedelta
+import pytz
+from collections import deque
+from typing import Any
+from builtins import open
+
+# Set up logging
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()])
+logger = logging.getLogger(__name__)
+
+# Load configuration
+try:
+    with open('config.json', 'r') as config_file:
+        config = json.load(config_file)
+except FileNotFoundError:
+    logger.error("Config file not found. Please create a config.json file.")
+    raise
+except json.JSONDecodeError:
+    logger.error("Invalid JSON in config file. Please check the format.")
+    raise
+
+# Bot setup
+intents = nextcord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix='!', intents=intents)
+
+# Cache setup
+cache = {}
+MAX_CACHE_SIZE = 3600  # Store up to 1 hour of 1-minute data
+
+# Databento client setup
+databento_client = None
+client_running = False
+
+def setup_databento_client():
+    global databento_client, client_running
+    if databento_client is None:
+        databento_client = db.Live(key=config['databento_api_key'])
+        
+    def process_data(record):
+        symbol = record.symbol.decode('utf-8').rstrip('\x00')
+        if symbol not in cache:
+            cache[symbol] = deque(maxlen=MAX_CACHE_SIZE)
+        cache[symbol].append({
+            'ts_event': record.ts_event,
+            'open': record.open,
+            'high': record.high,
+            'low': record.low,
+            'close': record.close,
+            'volume': record.volume
+        })
+        logger.info(f"Received data for {symbol}: {record}")
+
+    databento_client.add_callback(process_data)
+    
+    if not client_running:
+        databento_client.start()
+        client_running = True
+
+def fetch_ohlcv_data(symbol):
+    """
+    Fetch 1-second OHLCV data from Databento API.
+    """
+    setup_databento_client()
+    
+    try:
+        databento_client.subscribe(
+            dataset="GLBX.MDP3",
+            schema="ohlcv-1s",
+            stype_in="parent",
+            symbols=[symbol],
+        )
+        return True  # Indicate successful subscription
+    except Exception as e:
+        logger.error(f"Error fetching data from Databento: {str(e)}", exc_info=True)
+        return False
+
+def calculate_ohlcv(data, duration):
+    """
+    Calculate OHLCV data for a given duration from 1-second data.
+    """
+    if not data:
+        return None
+    
+    open_price = data[0]['open']
+    high_price = max(item['high'] for item in data)
+    low_price = min(item['low'] for item in data)
+    close_price = data[-1]['close']
+    volume = sum(item['volume'] for item in data)
+    
+    return {
+        'open': open_price,
+        'high': high_price,
+        'low': low_price,
+        'close': close_price,
+        'volume': volume,
+        'duration': duration
+    }
+
+def get_cached_data(symbol, duration):
+    """
+    Retrieve cached data for a given symbol and duration.
+    """
+    if symbol not in cache:
+        return None
+    
+    data_points = int(duration.total_seconds())
+    return list(cache[symbol])[-data_points:]
+
+@bot.event
+async def on_ready():
+    logger.info(f'Bot is ready. Logged in as {bot.user.name}')
+
+@bot.slash_command(name="ohlcv", description="Fetch OHLCV data for a specified symbol")
+async def ohlcv(interaction: nextcord.Interaction, symbol: str):
+    """
+    Fetch and display OHLCV data for the specified symbol.
+    """
+    if interaction.channel_id not in config['allowed_channel_ids']:
+        await interaction.response.send_message("This command is not allowed in this channel.", ephemeral=True)
+        return
+    
+    await interaction.response.defer()
+    await interaction.edit_original_message(content="Processing request... ⏳")
+    
+    durations = [
+        timedelta(seconds=60),
+        timedelta(minutes=5),
+        timedelta(minutes=15),
+        timedelta(hours=1)
+    ]
+    
+    embed = nextcord.Embed(title=f"OHLCV Data for {symbol}", color=nextcord.Color.blue())
+    
+    # Fetch the latest data
+    success = fetch_ohlcv_data(symbol)
+    if success:
+        embed.add_field(name="Status", value="Subscribed successfully. Waiting for data...", inline=False)
+    else:
+        embed.add_field(name="Status", value="Failed to subscribe to data.", inline=False)
+    
+    for duration in durations:
+        cached_data = get_cached_data(symbol, duration)
+        if cached_data:
+            processed_data = calculate_ohlcv(cached_data, duration)
+            
+            embed.add_field(
+                name=f"Last {processed_data['duration']}",
+                value=f"Open: {processed_data['open']}\n"
+                      f"High: {processed_data['high']}\n"
+                      f"Low: {processed_data['low']}\n"
+                      f"Close: {processed_data['close']}\n"
+                      f"Volume: {processed_data['volume']}",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name=f"Last {duration}",
+                value="Data not available",
+                inline=False
+            )
+    
+    await interaction.edit_original_message(content="", embed=embed)
+
+@bot.slash_command(name="status", description="Check the status of the data connection")
+async def status(interaction: nextcord.Interaction):
+    """
+    Check the status of the data connection and last update time.
+    """
+    if interaction.channel_id not in config['allowed_channel_ids']:
+        await interaction.response.send_message("This command is not allowed in this channel.", ephemeral=True)
+        return
+    
+    await interaction.response.defer()
+    await interaction.edit_original_message(content="Checking status... ⏳")
+    
+    status = "Connected" if client_running else "Disconnected"
+    
+    last_update = max((symbol_cache[-1]['ts_event'] for symbol_cache in cache.values() if symbol_cache), default=None)
+    if last_update:
+        last_update_time = datetime.fromtimestamp(last_update / 1e9, tz=pytz.timezone('US/Eastern'))
+    else:
+        last_update_time = "No updates yet"
+    
+    embed = nextcord.Embed(title="Databento Connection Status", color=nextcord.Color.green())
+    embed.add_field(name="Status", value=status, inline=False)
+    embed.add_field(name="Last Update", value=str(last_update_time), inline=False)
+    
+    await interaction.edit_original_message(content="", embed=embed)
+
+@bot.event
+async def on_application_command_error(interaction: nextcord.Interaction, error):
+    """
+    Global error handler for slash commands.
+    """
+    if isinstance(error, commands.errors.CommandNotFound):
+        await interaction.response.send_message("Invalid command. Use /help to see available commands.", ephemeral=True)
+    elif isinstance(error, commands.errors.MissingRequiredArgument):
+        await interaction.response.send_message(f"Missing required argument: {error.param}", ephemeral=True)
+    else:
+        logger.error(f"An error occurred: {str(error)}", exc_info=True)
+        await interaction.response.send_message("An error occurred while processing your request. Please try again later.", ephemeral=True)
+
+if __name__ == "__main__":
+    bot.run(config['bot_token'])
