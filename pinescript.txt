@@ -1,0 +1,599 @@
+//@version=5
+strategy(title="Fortune v8 by Moon", overlay=true, shorttitle="Fortune")
+
+// Constants
+x_default = input.int(3, "Number of bearish signals")
+y_default = input.int(5, "Number of candles to check")
+z_default = input.int(10, "Number of candles to short")
+
+// Define the timeframes to test
+timeframes = array.new_string(7)
+array.set(timeframes, 0, "1m")
+array.set(timeframes, 1, "5m")
+array.set(timeframes, 2, "15m")
+array.set(timeframes, 3, "30m")
+array.set(timeframes, 4, "1h")
+array.set(timeframes, 5, "4h")
+array.set(timeframes, 6, "D")
+
+// Define the settings to test
+x_values = array.new_int(3)
+array.set(x_values, 0, 3)
+array.set(x_values, 1, 5)
+array.set(x_values, 2, 10)
+
+y_values = array.new_int(3)
+array.set(y_values, 0, 5)
+array.set(y_values, 1, 10)
+array.set(y_values, 2, 20)
+
+z_values = array.new_int(3)
+array.set(z_values, 0, 10)
+array.set(z_values, 1, 20)
+array.set(z_values, 2, 30)
+        
+// Run the backtest on each timeframe and setting
+for i = 0 to array.size(timeframes) - 1
+    tf = array.get(timeframes, i)
+    for j = 0 to array.size(x_values) - 1
+        x = array.get(x_values, j)
+        y = array.get(y_values, j)
+        z = array.get(z_values, j)
+        run_backtest(tf, x, y, z)
+
+// Constants for visual elements
+group_title_core = "Enable/Disable Core Elements"
+group_title_core_trigger = "Trigger Cross/Plane Signal Settings"
+group_title_core_trigger2 = "Trigger Visual Settings"
+group_title_divergence_v1 = "Divergence v1 Settings"
+group_title_divergence_v2 = "Divergence v2 Settings"
+group_title_divergence_v2b = "Divergence v2 Settings 2"
+group_title_divergence_v3 = "Divergence v3 Settings"
+
+windowTooltip = "Sets the number of previous candles to analyze for spotting divergences. A higher number means looking further back to identify if the current price trend diverges from the velocity trend. Useful for spotting potential trend reversals or continuations based on price and velocity divergence."
+rangeTooltip = "Defines the range, in terms of the number of candles, for calculating the velocity of price changes. Adjusting this range affects the sensitivity of the velocity measurement. A smaller range makes it more responsive to recent price movements, while a larger range smooths out short-term fluctuations for a broader view."
+
+// Core inputs
+enable_triggers = input.bool(false, title="[Working!] Enable Trigger Cross/Plane Signals", group=group_title_core)
+show_buy_sell_signals = input.bool(false, title="[v2] Show Buy Sell Signals", tooltip="Display signals on the chart", group=group_title_core)
+pixels_shifted_up_down = input.int(10, title="[v1] Distance Label Shifted Up/Down [Recommended; 2px, 10px, 25px (close, med, far)]", minval=0, maxval=1000, group=group_title_core)
+
+show_1mv = input.bool(true, title="Show 1mV Signals", tooltip="Display 1mV Signals on the chart", group=group_title_core)
+show_5mv = input.bool(true, title="Show 5mV Signals", tooltip="Display 5mV Signals on the chart", group=group_title_core)
+
+// Define constants for dot sizes
+var DOT_SIZE_NORMAL = size.normal
+var DOT_SIZE_SMALL = size.small
+var DOT_SIZE_TINY = size.tiny
+
+/////////////
+// Divergence v1 Settings
+lookback_fast = input.int(10, minval=0, title="Fast Timeframe Trigger Divergence lookback_fast (5mT)", tooltip="On the 1 minute timeframe chart, this would be the 5 minute trigger", group=group_title_divergence_v1)
+lookback_slow = input.int(30, minval=0, title="Slow Timeframe Trigger Divergence lookback_fast (HT)", tooltip="On the 1 minute timeframe chart, this would be the hourly trigger", group=group_title_divergence_v1)
+hide_arrows = input.bool(false, title="Show Arrows?", group=group_title_divergence_v1)
+hide_labels = input.bool(false, title="Show Trigger Labels?", group=group_title_divergence_v1)
+
+/////////////
+// Divergence v2 Settings
+i_automatic_mode = input.bool(true, title="Set settings automatically based on timeframe", tooltip="Range and Distance are automatically lowering (more sensitive) as the timeframe increases.", group=group_title_divergence_v2)
+i_show_primary = input.bool(false, title="Show primary divergences with alternate settings (higher sensitivity)", group=group_title_divergence_v2)
+i_show_secondary = input.bool(false, title="Show seconary divergences with alternate settings (lower sensitivity)", group=group_title_divergence_v2)
+
+i_divergence_distance_1mv_a = input.int(2, title="1mV (Fine Tuning, Change Second)", tooltip=windowTooltip, minval=1, maxval=10, group=group_title_divergence_v2)
+i_divergence_range_1mv_a = input.int(3, title="1mV Range (Change First, Start From 1)", tooltip=rangeTooltip, minval=1, maxval=10, group=group_title_divergence_v2)
+i_divergence_distance_5mv_a = input.int(2, title="5mV (Fine Tuning, Change Second)", tooltip=windowTooltip, minval=1, maxval=10, group=group_title_divergence_v2)
+i_divergence_range_5mv_a = input.int(3, title="5mV Range (Change First, Start From 1)", tooltip=rangeTooltip, minval=1, maxval=10, group=group_title_divergence_v2)
+
+i_divergence_distance_1mv_b = input.int(2, title="1mV (Fine Tuning, Change Second)", tooltip=windowTooltip, minval=1, maxval=10, group=group_title_divergence_v2b)
+i_divergence_range_1mv_b = input.int(2, title="1mV Range (Change First, Start From 1)", tooltip=rangeTooltip, minval=1, maxval=10, group=group_title_divergence_v2b)
+i_divergence_distance_5mv_b = input.int(2, title="5mV (Fine Tuning, Change Second)", tooltip=windowTooltip, minval=1, maxval=10, group=group_title_divergence_v2b)
+i_divergence_range_5mv_b = input.int(2, title="5mV Range (Change First, Start From 1)", tooltip=rangeTooltip, minval=1, maxval=10, group=group_title_divergence_v2b)
+
+getDivergenceSettings() =>
+    if i_automatic_mode
+        if timeframe.isseconds or (timeframe.isminutes and timeframe.multiplier <= 5)
+            [2, 2, 2, 2]  // 5 minutes or less
+        else if timeframe.isminutes and timeframe.multiplier < 60
+            [1, 2, 1, 2]  // Between 5 minutes and 1 hour
+        else
+            [1, 1, 1, 1]  // 1 hour and above
+    else
+        [i_divergence_distance_1mv_a, i_divergence_range_1mv_a, i_divergence_distance_5mv_a, i_divergence_range_5mv_a]
+
+getDivergenceSettingsb() =>
+    if i_automatic_mode
+        if timeframe.isseconds or (timeframe.isminutes and timeframe.multiplier <= 5)
+            [3, 3, 3, 3]  // 5 minutes or less
+        else if timeframe.isminutes and timeframe.multiplier < 60
+            [2, 2, 2, 2]  // Between 5 minutes and 1 hour
+        else
+            [1, 2, 2, 1]  // 1 hour and above
+    else
+        [i_divergence_distance_1mv_b, i_divergence_range_1mv_b, i_divergence_distance_5mv_b, i_divergence_range_5mv_b]
+
+[divergenceDistance1, divergenceRange1, divergenceDistance5, divergenceRange5] = getDivergenceSettings()
+[divergenceDistance1b, divergenceRange1b, divergenceDistance5b, divergenceRange5b] = getDivergenceSettingsb()
+
+i_velocity_scale = input.float(5, "Velocity Scale", minval=1, maxval=100, step=1)
+i_velocity_smooth_period = input.int(1, "Velocity Smooth Period", minval=1, maxval=50)
+
+// Calculate the sum of divergence settings
+divergenceSum = divergenceDistance1 + divergenceRange1 + divergenceDistance5 + divergenceRange5
+divergenceSumb = divergenceDistance1b + divergenceRange1b + divergenceDistance5b + divergenceRange5b
+
+/////////////
+// Divergence v3 Settings
+i_divergence_v3_lookback_multiplier_1mv = 10 //input.int(10, title="Default 1mV lookback_fast Multiplier [=5]", group=group_title_divergence_v3)
+i_divergence_v3_lookback_multiplier_5mv = 20 // input.int(20, title="Default 5mV lookback_fast Multiplier [=20]", group=group_title_divergence_v3)
+
+/////////////
+// Trigger Settings
+i_source = ohlc4 //input.i_source(defval=ohlc4, title="i_source", group=group_title_core_trigger)
+EMA_LENGTH = 27
+i_cross_over_confirmation_candles = 15 //input.int(15, minval=1, title="Candles for Confirmation of Crossover", group=group_title_core_trigger)
+i_plane_confirmation_threshold = 5 //input.int(5, minval=1, title="Candles for Confirmation of Plane", group=group_title_core_trigger)
+// Visual
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//
+// 8888888888                            888    d8b                            
+// 888                                   888    Y8P                            
+// 888                                   888                                   
+// 8888888    888  888 88888b.   .d8888b 888888 888  .d88b.  88888b.  .d8888b  
+// 888        888  888 888 "88b d88P"    888    888 d88""88b 888 "88b 88K      
+// 888        888  888 888  888 888      888    888 888  888 888  888 "Y8888b. 
+// 888        Y88b 888 888  888 Y88b.    Y88b.  888 Y88..88P 888  888      X88 
+// 888         "Y88888 888  888  "Y8888P  "Y888 888  "Y88P"  888  888  88888P' 
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////     
+
+// Create non-repainting security function
+fix_security(_symbol, _res, _src) =>
+    request.security(_symbol, _res, _src[barstate.isrealtime ? 1 : 0], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+  
+// Label Function
+ax = -0.000075
+ay = -0.001
+drawSignalLabel(barIndex, price, is_up, color, text_var, text_var_2, size=size.small, style_var=label.style_none) =>
+    price1 = price*(1+ax*pixels_shifted_up_down)
+    price2 = price1*(1+ay)
+    if is_up == 2
+        price1 := price*(1-ax*pixels_shifted_up_down)
+        price2 := price1*(1-ay)
+    else if is_up == 3
+        price1 := price*(1+(ax*pixels_shifted_up_down*2))
+        price2 := price1*(1+(ay))
+    else if is_up == 4
+        price1 := price*(1-(ax*pixels_shifted_up_down*2))
+        price2 := price1*(1-(ay))
+    else if is_up == 5
+        price1 := price*(1+(ax*pixels_shifted_up_down*3))
+        price2 := price1*(1+(ay))
+    else if is_up == 6
+        price1 := price*(1-(ax*pixels_shifted_up_down*3))
+        price2 := price1*(1-(ay))
+
+    if hide_arrows
+        label.new(barIndex, price1, text_var, color=color, textcolor=color.white, style=style_var, yloc=yloc.price, size=size, textalign=text.align_right)
+    if hide_labels
+        label.new(barIndex, price2, text_var_2, color=color.white, textcolor=color, style=style_var, yloc=yloc.price, size=size, textalign=text.align_right)
+
+// Timeframe Detection for Dynamic EMA Calculation
+timeframeMultiplier() =>
+    int tf_multiplier = 0
+    if timeframe.isintraday
+        if timeframe.multiplier >= 1 and timeframe.multiplier < 5
+            tf_multiplier := 1
+        else if timeframe.multiplier >= 5 and timeframe.multiplier < 60
+            tf_multiplier := 2
+        else if timeframe.multiplier >= 60 and timeframe.multiplier < 120
+            tf_multiplier := 3
+        else
+            tf_multiplier := 4
+    else if timeframe.isdaily
+        tf_multiplier := 4
+    else if timeframe.isweekly
+        tf_multiplier := 5
+    else
+        tf_multiplier := 6
+    tf_multiplier
+
+multiplier = timeframeMultiplier()
+
+// EMA Calculations for Different Timeframes
+nextHigherTimeframe = ""
+nextNextHigherTimeframe = ""
+nextHigherName = ""
+fastEmaName = ""
+slowEmaName = ""
+fastEma = 0.0
+
+if multiplier == 1
+    nextHigherTimeframe := "5"
+    nextHigherName := "H"
+    nextNextHigherTimeframe := "60"
+    fastEmaName := "1"
+    slowEmaName := "5"
+else if multiplier == 2
+    nextHigherTimeframe := "60"
+    nextHigherName := "D"
+    nextNextHigherTimeframe := "D"
+    fastEmaName := "5"
+    slowEmaName := "H"
+else if multiplier == 3
+    nextHigherTimeframe := "D"
+    nextHigherName := "W"
+    nextNextHigherTimeframe := "W"
+    fastEmaName := "H"
+    slowEmaName := "D"
+else
+    nextHigherTimeframe := "M"
+    nextHigherName := "M"
+    nextNextHigherTimeframe := "M"
+    if multiplier == 5
+        fastEmaName := "W"
+        slowEmaName := "M"
+    else
+        fastEmaName := "M"
+        slowEmaName := "M"
+
+
+minTransparency = 70
+maxTransparency = 95
+// Function to create gradient color
+gradientColor(baseColor, velocity) =>
+    absVelocity = math.abs(velocity)
+    maxVelocity = ta.highest(math.abs(velocity), 100)  // Adjust 100 to change the range considered for max velocity
+    relativeStrength = absVelocity / maxVelocity
+    transparency = math.round(minTransparency + (maxTransparency - minTransparency) * (1 - relativeStrength))
+    color.new(baseColor, transparency)
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//
+// 88888888888         d8b                                             
+//     888             Y8P                                             
+//     888                                                             
+//     888     888d888 888  .d88b.   .d88b.   .d88b.  888d888 .d8888b  
+//     888     888P"   888 d88P"88b d88P"88b d8P  Y8b 888P"   88K      
+//     888     888     888 888  888 888  888 88888888 888     "Y8888b. 
+//     888     888     888 Y88b 888 Y88b 888 Y8b.     888          X88 
+//     888     888     888  "Y88888  "Y88888  "Y8888  888      88888P' 
+//                              888      888                           
+//                         Y8b d88P Y8b d88P                           
+//                          "Y88P"   "Y88P"         
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////                   
+
+Velocity = ta.ema(i_source, EMA_LENGTH)
+fastEma := Velocity
+VELO1 = fix_security(syminfo.tickerid, '1', Velocity)
+VELO5 = fix_security(syminfo.tickerid, '5', Velocity)
+VELO60 = fix_security(syminfo.tickerid, '60', Velocity)
+currentEma = request.security(syminfo.tickerid, "1", Velocity, lookahead=barmerge.lookahead_on)
+slowEma = request.security(syminfo.tickerid, nextHigherTimeframe, Velocity, lookahead=barmerge.lookahead_on)
+longEma = request.security(syminfo.tickerid, nextNextHigherTimeframe, Velocity, lookahead=barmerge.lookahead_on)
+
+a1 = ta.ema(i_source, EMA_LENGTH)
+// Function to calculate and smooth velocity
+calcSmoothVelocity(series, timeframe) =>
+    current = request.security(syminfo.tickerid, timeframe, series[barstate.isrealtime ? 1 : 0], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+    previous = request.security(syminfo.tickerid, timeframe, series[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+    velocity = (current - previous) * i_velocity_scale
+    smoothed = ta.ema(velocity, i_velocity_smooth_period)
+    [current, smoothed]
+
+// EMA and Velocity Calculations
+[a, a_velo] = calcSmoothVelocity(ta.ema(i_source, EMA_LENGTH), "1")
+[b, b_velo] = calcSmoothVelocity(ta.ema(i_source, EMA_LENGTH), "5")
+[c, c_velo] = calcSmoothVelocity(ta.ema(i_source, EMA_LENGTH), "60")
+[d, d_velo] = calcSmoothVelocity(ta.ema(i_source, EMA_LENGTH), "D")
+[w, w_velo] = calcSmoothVelocity(ta.ema(i_source, EMA_LENGTH), "W")
+[m, m_velo] = calcSmoothVelocity(ta.ema(i_source, EMA_LENGTH), "M")
+
+// Plot EMAs and velocities with gradient fill
+a_plot = plot(a, '1', color=color.new(#ffee00, 8), linewidth=2)
+a_velo_plot = plot(a + a_velo, '1 Velocity', color=color.new(#ffee00, 100), linewidth=1, display=display.none)
+fill(a_plot, a_velo_plot, color = gradientColor(#ffee00, a_velo))
+
+b_plot = plot(b, '5', color=color.rgb(22, 115, 255), linewidth=2)
+b_velo_plot = plot(b + b_velo, '5 Velocity', color=color.new(#ff8616, 100), linewidth=1, display=display.none)
+fill(b_plot, b_velo_plot, color = gradientColor(#1683ff, b_velo))
+
+c_plot = plot(c, 'H', color=#ac2bf7f7, linewidth=3)
+c_velo_plot = plot(c + c_velo, 'H Velocity', color=color.new(#f72b2b, 100), linewidth=1, display=display.none)
+fill(c_plot, c_velo_plot, color = gradientColor(color.rgb(172, 43, 247), c_velo))
+
+// d_plot = plot(d, 'D', color=color.new(#54d833, 3), linewidth=4)
+// d_velo_plot = plot(d + d_velo, 'D Velocity', color=color.new(#54d833, 100), linewidth=1, display=display.none)
+// fill(d_plot, d_velo_plot, color = gradientColor(#54d833, d_velo))
+
+//w_plot = plot(w, 'W', color=color.new(#2d88f0, 26), linewidth=5)
+//w_velo_plot = plot(w + w_velo, 'W Velocity', color=color.new(#2d88f0, 100), linewidth=1, display=display.none)
+//fill(w_plot, w_velo_plot, color = gradientColor(#2d88f0, w_velo))
+
+//m_plot = plot(m, 'M', color=color.new(#2f9b25, 0), linewidth=6)
+//m_velo_plot = plot(m + m_velo, 'M Velocity', color=color.new(#2f9b25, 100), linewidth=1, display=display.none)
+//fill(m_plot, m_velo_plot, color = gradientColor(#2f9b25, m_velo))
+
+direction_color = color.white
+long_orientation = a > b and b > c
+short_orientation = a < b and b < c
+
+if long_orientation
+    direction_color := color.green
+if short_orientation
+    direction_color := color.red
+    
+//////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////// 
+
+// 8888888b.  888                                     
+// 888   Y88b 888                                     
+// 888    888 888                                     
+// 888   d88P 888  8888b.  88888b.   .d88b.  .d8888b  
+// 8888888P"  888     "88b 888 "88b d8P  Y8b 88K      
+// 888        888 .d888888 888  888 88888888 "Y8888b. 
+// 888        888 888  888 888  888 Y8b.          X88 
+// 888        888 "Y888888 888  888  "Y8888   88888P' 
+//                          
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////             
+
+var int lastAirplaneSetupIndex = na
+var int lastBearPlaneSetupIndex = na
+
+airplaneSetup = fastEma > slowEma and close > close[i_plane_confirmation_threshold-1] and fastEma[i_plane_confirmation_threshold-1] > slowEma[i_plane_confirmation_threshold-1] and fastEma[i_plane_confirmation_threshold] < slowEma[i_plane_confirmation_threshold] and fastEma > longEma and slowEma > longEma 
+bearPlaneSetup = fastEma < slowEma and close < close[i_plane_confirmation_threshold-1] and fastEma[i_plane_confirmation_threshold-1] < slowEma[i_plane_confirmation_threshold-1] and fastEma[i_plane_confirmation_threshold] > slowEma[i_plane_confirmation_threshold] and fastEma < longEma and slowEma < longEma
+
+//////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////// 
+//
+//  .d8888b.                                                                        
+// d88P  Y88b                                                                       
+// 888    888                                                                       
+// 888        888d888  .d88b.  .d8888b  .d8888b   .d88b.  888  888  .d88b.  888d888 
+// 888        888P"   d88""88b 88K      88K      d88""88b 888  888 d8P  Y8b 888P"   
+// 888    888 888     888  888 "Y8888b. "Y8888b. 888  888 Y88  88P 88888888 888     
+// Y88b  d88P 888     Y88..88P      X88      X88 Y88..88P  Y8bd8P  Y8b.     888     
+//  "Y8888P"  888      "Y88P"   88888P'  88888P'  "Y88P"    Y88P    "Y8888  888  
+//   
+// v1
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////  
+
+// Update for Crossovers and Plane Setups
+bullishCrossoverShort = ta.crossover(fastEma, slowEma) and fastEma[i_cross_over_confirmation_candles] < slowEma[i_cross_over_confirmation_candles]
+bearishCrossoverShort = ta.crossunder(fastEma, slowEma) and fastEma[i_cross_over_confirmation_candles] > slowEma[i_cross_over_confirmation_candles]
+bullishCrossoverMedium = ta.crossover(slowEma, longEma) and slowEma[i_cross_over_confirmation_candles] < longEma[i_cross_over_confirmation_candles]
+bearishCrossoverMedium = ta.crossunder(slowEma, longEma) and slowEma[i_cross_over_confirmation_candles] > longEma[i_cross_over_confirmation_candles]
+
+var int lastBullishCrossoverShortIndex = na
+var int lastBearishCrossoverShortIndex = na
+var int lastBullishCrossoverMediumIndex = na
+var int lastBearishCrossoverMediumIndex = na
+
+// Drawing labels for crossovers and plane setups
+if bullishCrossoverShort and (na(lastBullishCrossoverShortIndex) or bar_index - lastBullishCrossoverShortIndex > i_cross_over_confirmation_candles) and enable_triggers
+    crossoverText = "Cross " + fastEmaName + "/" + slowEmaName
+    drawSignalLabel(bar_index, slowEma, 1, color.green, "↑", crossoverText)
+    lastBullishCrossoverShortIndex := bar_index
+
+if bearishCrossoverShort and (na(lastBearishCrossoverShortIndex) or bar_index - lastBearishCrossoverShortIndex > i_cross_over_confirmation_candles) and enable_triggers
+    crossoverText = "Cross " + fastEmaName + "/" + slowEmaName
+    drawSignalLabel(bar_index, slowEma, 2, color.red, "↓", crossoverText)
+    lastBearishCrossoverShortIndex := bar_index
+
+if bullishCrossoverMedium and (na(lastBullishCrossoverMediumIndex) or bar_index - lastBullishCrossoverMediumIndex > i_cross_over_confirmation_candles) and enable_triggers
+    crossoverText = "Cross " + slowEmaName + "/" + nextHigherName
+    drawSignalLabel(bar_index, longEma, 3, color.green, "↑↑", crossoverText, size.large)
+    lastBullishCrossoverMediumIndex := bar_index
+
+if bearishCrossoverMedium and (na(lastBearishCrossoverMediumIndex) or bar_index - lastBearishCrossoverMediumIndex > i_cross_over_confirmation_candles) and enable_triggers
+    crossoverText = "Cross " + slowEmaName + "/" + nextHigherName
+    drawSignalLabel(bar_index, longEma, 4, color.red, "↓↓", crossoverText, size.large)
+    lastBearishCrossoverMediumIndex := bar_index
+
+// Airplane labels
+if airplaneSetup and (na(lastAirplaneSetupIndex) or bar_index - lastAirplaneSetupIndex > i_cross_over_confirmation_candles) and enable_triggers
+    drawSignalLabel(bar_index, slowEma, 5, color.white, "↑↑↑", "✈ Airplane", size.huge)
+    lastAirplaneSetupIndex := bar_index
+
+if bearPlaneSetup and (na(lastBearPlaneSetupIndex) or bar_index - lastBearPlaneSetupIndex > i_cross_over_confirmation_candles) and enable_triggers
+    drawSignalLabel(bar_index, slowEma, 6, color.white, "↓↓↓", "✈ Bear Plane", size.huge)
+    lastBearPlaneSetupIndex := bar_index
+
+//////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////// 
+//
+// 8888888b.  d8b                                                                        
+// 888  "Y88b Y8P                                                                        
+// 888    888                                                                            
+// 888    888 888 888  888  .d88b.  888d888  .d88b.   .d88b.  88888b.   .d8888b  .d88b.  
+// 888    888 888 888  888 d8P  Y8b 888P"   d88P"88b d8P  Y8b 888 "88b d88P"    d8P  Y8b 
+// 888    888 888 Y88  88P 88888888 888     888  888 88888888 888  888 888      88888888 
+// 888  .d88P 888  Y8bd8P  Y8b.     888     Y88b 888 Y8b.     888  888 Y88b.    Y8b.     
+// 8888888P"  888   Y88P    "Y8888  888      "Y88888  "Y8888  888  888  "Y8888P  "Y8888  
+//                                               888                                     
+//                                          Y8b d88P                                     
+//                                           "Y88P"                    
+// v2
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////  
+
+calc_divergence(velo, range_input, isLong, divCandles) =>
+    condition1 = isLong ? velo > velo[divCandles]: velo < velo[divCandles]
+    condition2 = isLong ? close < close[divCandles] and ta.falling(close, range_input) : close > close[divCandles] and ta.rising(close, range_input)
+    condition3 = isLong ? ta.highest(velo, range_input) > ta.highest(velo[divCandles], range_input) : ta.lowest(velo, range_input) < ta.lowest(velo[divCandles], range_input)
+    condition4 = isLong ? ta.lowest(close, range_input) < ta.lowest(close[divCandles], range_input) : ta.highest(close, range_input) > ta.highest(close[divCandles], range_input)
+    condition1 and condition2 and condition3 and condition4
+
+// Divergence conditions
+var int last5MinDivergenceTime = na
+var int last1MinDivergenceTime = na
+var int last5MinDivergenceTimeb = na
+var int last1MinDivergenceTimeb = na
+
+divergenceOnVELO_1L = calc_divergence(Velocity, divergenceRange1, false, divergenceDistance1) and (na(last1MinDivergenceTime) or bar_index - last1MinDivergenceTime >= 2)
+divergenceOnVELO_1S = calc_divergence(Velocity, divergenceRange1, true, divergenceDistance1) and (na(last1MinDivergenceTime) or bar_index - last1MinDivergenceTime >= 2)
+divergenceOnVELO_5L = calc_divergence(fastEma, divergenceRange5, false, divergenceDistance5) and (na(last5MinDivergenceTime) or bar_index - last5MinDivergenceTime >= 10)
+divergenceOnVELO_5S = calc_divergence(fastEma, divergenceRange5, true, divergenceDistance5) and (na(last5MinDivergenceTime) or bar_index - last5MinDivergenceTime >= 10)
+
+divergenceOnVELO_1Lb = calc_divergence(Velocity, divergenceRange1b, false, divergenceDistance1b) and (na(last1MinDivergenceTimeb) or bar_index - last1MinDivergenceTimeb >= 2)
+divergenceOnVELO_1Sb = calc_divergence(Velocity, divergenceRange1b, true, divergenceDistance1b) and (na(last1MinDivergenceTimeb) or bar_index - last1MinDivergenceTimeb >= 2)
+divergenceOnVELO_5Lb = calc_divergence(fastEma, divergenceRange5b, false, divergenceDistance5b) and (na(last5MinDivergenceTimeb) or bar_index - last5MinDivergenceTimeb >= 10)
+divergenceOnVELO_5Sb = calc_divergence(fastEma, divergenceRange5b, true, divergenceDistance5b) and (na(last5MinDivergenceTimeb) or bar_index - last5MinDivergenceTimeb >= 10)
+
+if divergenceOnVELO_1L or divergenceOnVELO_1S
+    last1MinDivergenceTime := bar_index
+
+if divergenceOnVELO_5L or divergenceOnVELO_5S
+    last5MinDivergenceTime := bar_index
+
+if divergenceOnVELO_1Lb or divergenceOnVELO_1Sb
+    last1MinDivergenceTimeb := bar_index
+
+if divergenceOnVELO_5Lb or divergenceOnVELO_5Sb
+    last5MinDivergenceTimeb := bar_index
+
+// Define the criteria for entering a trade
+bullishOrientation = Velocity > fastEma and fastEma > slowEma
+bearishOrientation = Velocity < fastEma and fastEma < slowEma
+longEntry = divergenceOnVELO_1L and divergenceOnVELO_5L and bullishOrientation and show_buy_sell_signals
+shortEntry = divergenceOnVELO_1S and divergenceOnVELO_5S and bearishOrientation and show_buy_sell_signals
+
+longEntryb = divergenceOnVELO_1Lb and divergenceOnVELO_5Lb and bullishOrientation and show_buy_sell_signals
+shortEntryb = divergenceOnVELO_1Sb and divergenceOnVELO_5Sb and bearishOrientation and show_buy_sell_signals
+
+// Function to determine dot size based on divergence sum
+getDotSize(sum) =>
+    sum >= 10 ? DOT_SIZE_NORMAL : sum >= 8 ? DOT_SIZE_SMALL : DOT_SIZE_TINY
+
+// Function to determine dot distance based on divergence sum
+getDistance(sum) =>
+    sum >= 12 ? 3 : sum >= 10 ? 2 : sum >= 8 ? 1 : 0
+
+dotDistance = getDistance(divergenceSum)
+dotDistanceb = getDistance(divergenceSumb)
+
+// Plotting for main divergence
+plotshape(divergenceOnVELO_1L and show_1mv and i_show_primary, title="1m Long Circle", style=shape.circle, location=location.abovebar, color=color.blue, textcolor=color.white, size=size.tiny)
+plotshape(divergenceOnVELO_1S and show_1mv and i_show_primary, title="1m Short Circle", style=shape.circle, location=location.belowbar, color=color.orange, textcolor=color.white, size=size.tiny)
+plotshape(divergenceOnVELO_5L and show_5mv and i_show_primary, title="5m Long Circle", style=shape.circle, location=location.abovebar, color=color.green, textcolor=color.white, size=size.small)
+plotshape(divergenceOnVELO_5S and show_5mv and i_show_primary, title="5m Short Circle", style=shape.circle, location=location.belowbar, color=color.red, textcolor=color.white, size=size.small)
+
+// Plotting for secondary divergence
+plotshape(divergenceOnVELO_1Lb and show_1mv and i_show_secondary, title="1m Long Circle B", style=shape.triangleup, location=location.belowbar, color=color.blue, textcolor=color.white, size=size.tiny)
+plotshape(divergenceOnVELO_1Sb and show_1mv and i_show_secondary, title="1m Short Circle B", style=shape.triangledown, location=location.abovebar, color=color.orange, textcolor=color.white, size=size.tiny)
+plotshape(divergenceOnVELO_5Lb and show_5mv and i_show_secondary, title="5m Long Circle B", style=shape.triangleup, location=location.belowbar, color=color.green, textcolor=color.white, size=size.small)
+plotshape(divergenceOnVELO_5Sb and show_5mv and i_show_secondary, title="5m Short Circle B", style=shape.triangledown, location=location.abovebar, color=color.red, textcolor=color.white, size=size.small)
+// Plot buy and sell signals only if the slope is steeper than the threshold
+plotshape(longEntry, title="Long, 1st Timeframe", style=shape.labelup, text="Long.", textcolor=color.white, location=location.belowbar, color=color.green, size=size.tiny, display = display.all - display.status_line)
+plotshape(shortEntry, title="Short, 1st Timeframe", style=shape.labeldown, text="Short.", textcolor=color.white, location=location.abovebar, color=color.red, size=size.tiny, display = display.all - display.status_line)
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////  
+//
+//  8888888888 888     888  .d8888b.  
+// 888        888     888 d88P  Y88b 
+// 888        888     888 888    888 
+// 8888888    Y88b   d88P 888        
+// 888         Y88b d88P  888  88888 
+// 888          Y88o88P   888    888 
+// 888           Y888P    Y88b  d88P 
+// 888            Y8P      "Y8888P"  
+//
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////  
+
+group_title_fvg = "Fair Value Gap (FVG) Settings"
+
+// FVG Input parameters
+i_fvg_enabled = input.bool(false, title="Enable FVG", group=group_title_fvg)
+i_fvg_tolerance = input.float(0, title="Gap Detection Tolerance", tooltip="Tolerance used to detect gaps when high and low prices are extremely close", group=group_title_fvg)
+
+// FVG Time frame settings
+fvg_show_1_5m = input.bool(false, "Show 1-5 minute", group=group_title_fvg)
+fvg_show_5_30m = input.bool(false, "Show 5-30 minute", group=group_title_fvg)
+fvg_show_30m_1h = input.bool(true, "Show 30 minute to 1 hour", group=group_title_fvg)
+fvg_show_1h_1d = input.bool(true, "Show 1 hour to 1 day", group=group_title_fvg)
+
+fvg_tf = timeframe.in_seconds()
+fvg_is_valid = false
+if i_fvg_enabled and ((fvg_show_1_5m and fvg_tf >= 60 and fvg_tf <= 300) or 
+   (fvg_show_5_30m and fvg_tf > 300 and fvg_tf <= 1800) or 
+   (fvg_show_30m_1h and fvg_tf > 1800 and fvg_tf <= 3600) or 
+   (fvg_show_1h_1d and fvg_tf > 3600 and fvg_tf <= 86400))
+    fvg_is_valid := true
+
+// Gap Detection using wicks (highs and lows)
+fvg_gapExists(candle1_high, candle1_low, candle3_high, candle3_low, tolerance) =>
+    candle1_high + tolerance < candle3_low or candle1_low - tolerance > candle3_high
+
+fvg_gapCurrent = fvg_gapExists(high[2], low[2], high, low, i_fvg_tolerance)
+
+// Entry Conditions
+fvg_gapUpCondition = fvg_gapCurrent and (low > high[2])
+fvg_gapDownCondition = fvg_gapCurrent and (high < low[2])
+
+// Drawing function for the price labels
+fvg_draw_label(price, txt, txtColor) => 
+    x = bar_index + 5 
+    var id = label.new(x=x, y=price, text=txt, textcolor=txtColor, style=label.style_none)
+    label.set_xy(id, x, price)
+    label.set_text(id, txt)
+    label.set_textcolor(id, txtColor)
+
+fvg_gap_up = false
+fvg_gap_down = false
+
+// Drawing the FVG with horizontal lines
+if fvg_is_valid
+    // Gap Up (Price Up)
+    if fvg_gapUpCondition
+        line.new(x1=bar_index[2], x2=bar_index, y1=high[2], y2=high[2], color=color.red, width=1)
+        line.new(x1=bar_index[2], x2=bar_index, y1=low, y2=low, color=color.green, width=1)
+        fvg_draw_label(high[2], str.tostring(high[2]), color.red)
+        fvg_draw_label(low, str.tostring(low), color.green)
+        
+    // Gap Down (Price Down)
+    else if fvg_gapDownCondition
+        line.new(x1=bar_index[2], x2=bar_index, y1=low[2], y2=low[2], color=color.green, width=1)
+        line.new(x1=bar_index[2], x2=bar_index, y1=high, y2=high, color=color.red, width=1)
+        fvg_draw_label(low[2], str.tostring(low[2]), color.green)
+        fvg_draw_label(high, str.tostring(high), color.red)
+
+    fvg_gap_up := fvg_gapUpCondition[0]
+    fvg_gap_down := fvg_gapDownCondition[0]
+
+// Display the Gap Up (Enter Long when Price Returns to Gap) on the candle with the gap
+plotshape(series=fvg_gap_up, title="FVG Gap Up (Enter Long on Return)", location=location.belowbar, color=color.green, style=shape.arrowup, text="FVG Up", size=size.small, textcolor=color.white)
+
+// Display the Gap Down (Enter Short when Price Returns to Gap) on the candle with the gap
+plotshape(series=fvg_gap_down, title="FVG Gap Down (Enter Short on Return)", location=location.abovebar, color=color.red, style=shape.arrowdown, text="FVG Down", size=size.small, textcolor=color.white)
+
+// FVG Alert conditions
+alertcondition(fvg_gap_up, title="FVG Gap Up Alert", message="FVG Gap Up detected - potential long entry when price returns to gap.")
+alertcondition(fvg_gap_down, title="FVG Gap Down Alert", message="FVG Gap Down detected - potential short entry when price returns to gap.")
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////  
+//
+//        d8888 888                  888             
+//       d88888 888                  888             
+//      d88P888 888                  888             
+//     d88P 888 888  .d88b.  888d888 888888 .d8888b  
+//    d88P  888 888 d8P  Y8b 888P"   888    88K      
+//   d88P   888 888 88888888 888     888    "Y8888b. 
+//  d8888888888 888 Y8b.     888     Y88b.       X88 
+// d88P     888 888  "Y8888  888      "Y888  88888P' 
+//
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////  
+            
+// Alert conditions for new crossovers
+alertcondition(bullishCrossoverShort, title="Bullish Entry Alert (Short)", message="Bullish crossover detected - potential short-term entry point.")
+alertcondition(bearishCrossoverShort, title="Bearish Entry Alert (Short)", message="Bearish crossover detected - potential short-term entry point.")
+alertcondition(bullishCrossoverMedium, title="Bullish Entry Alert (Medium)", message="Bullish crossover detected - potential medium-term entry point.")
+alertcondition(bearishCrossoverMedium, title="Bearish Entry Alert (Medium)", message="Bearish crossover detected - potential medium-term entry point.")
